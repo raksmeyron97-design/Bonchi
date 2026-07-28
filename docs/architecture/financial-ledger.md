@@ -128,3 +128,40 @@ rolls over. Tests cover 23:59 and 00:01 local, and DST transitions in a zone tha
 observes them, even though Cambodia does not.
 
 A settled or reversed debt is never overdue regardless of its due date.
+
+## Reminders follow the ledger
+
+Reminders are notifications to the **merchant** — they are never messages sent to
+a customer. Nothing reaches a customer unless the merchant opens the share sheet
+and sends it themselves.
+
+Scheduling and cancelling are part of the ledger write path, not a background
+job. `LedgerService.write` runs one more step after its transaction commits:
+
+1. Read the customer's full ledger.
+2. `planReminderChanges` derives what should change.
+3. The applier schedules and cancels.
+
+The plan is derived from the **ledger**, not from the kind of write that
+happened. A payment is not the only thing that settles a debt, so asking the
+allocation engine "what is still outstanding" gives the right answer whether the
+balance moved because of a payment, an adjustment or a reversal — including for
+write kinds that do not exist yet.
+
+Three properties this has to hold, each covered by a test:
+
+- A debt whose money has arrived loses its reminders **in the same write**.
+  Being nagged about a settled debt is the fastest way to lose trust in a ledger.
+- A debt that a payment only partly covers keeps them.
+- Riel and dollar debts settle independently. Clearing a dollar debt must not
+  silence a riel reminder.
+
+Step 3 runs **outside** the SQLite transaction, deliberately. Scheduling a
+notification is a slow OS call that can fail for reasons unrelated to money, and
+holding a write transaction open across it would block every other write. It also
+cannot throw: the debt is already committed by then, so surfacing a save failure
+for a save that succeeded would make the merchant record it twice. A failure is
+reported and swallowed — a missing reminder is a defect, a lost debt is worse.
+
+A context that supports no notifications simply passes no applier, and the ledger
+behaves identically.

@@ -8,11 +8,14 @@ import {
   type ReminderPreferences,
   buildReminderSchedule,
   composeReminderMessage,
+  formatMoney,
+  money,
   uuidV4,
 } from '@bonchi/domain';
 import { type Locale } from '@bonchi/localization';
 import { type SqlDatabase } from '../../db/client';
 import { type BalanceRecord } from '../../db/repositories';
+import { type ReminderPlan } from './reminderPlan';
 
 /**
  * Reminders.
@@ -203,24 +206,37 @@ function notificationContent(
 }
 
 /**
- * Cancels every reminder for a settled debt.
+ * Cancels every pending reminder for the given transactions.
  *
- * Called from the payment write path rather than left to a cleanup job: being
+ * Driven from the ledger write path rather than left to a cleanup job: being
  * nagged about money already received is the fastest way to lose a merchant's
- * trust in the app.
+ * trust in the app, and "later" is not soon enough when the merchant is standing
+ * in front of the customer who just paid.
+ *
+ * Already-cancelled and already-fired reminders are left alone — cancelling a
+ * notification the merchant has seen would rewrite history for no benefit.
  */
-export async function cancelRemindersForTransaction(
+export async function cancelRemindersForTransactions(
   database: SqlDatabase,
-  transactionId: string,
+  transactionIds: readonly string[],
   reason: 'SETTLED' | 'REVERSED' | 'MERCHANT_DISABLED',
 ): Promise<void> {
+  if (transactionIds.length === 0) return;
+
   const Notifications = getNotifications();
+  const placeholders = transactionIds.map(() => '?').join(',');
 
   const rows = await database.all<{ id: string; os_notification_id: string | null }>(
     `SELECT id, os_notification_id FROM reminders
-     WHERE transaction_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
-    [transactionId],
+     WHERE transaction_id IN (${placeholders})
+       AND cancelled_at IS NULL AND fired_at IS NULL`,
+    [...transactionIds],
   );
+
+  // Nothing was ever scheduled for these — a debt with no due date, or a device
+  // where the merchant never granted notification permission. Not an error, and
+  // not worth an UPDATE.
+  if (rows.length === 0) return;
 
   for (const row of rows) {
     if (Notifications && row.os_notification_id) {
@@ -236,9 +252,150 @@ export async function cancelRemindersForTransaction(
 
   await database.run(
     `UPDATE reminders SET cancelled_at = ?, cancelled_reason = ?
-     WHERE transaction_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
-    [new Date().toISOString(), reason, transactionId],
+     WHERE transaction_id IN (${placeholders})
+       AND cancelled_at IS NULL AND fired_at IS NULL`,
+    [new Date().toISOString(), reason, ...transactionIds],
   );
+}
+
+/** Single-transaction convenience over {@link cancelRemindersForTransactions}. */
+export async function cancelRemindersForTransaction(
+  database: SqlDatabase,
+  transactionId: string,
+  reason: 'SETTLED' | 'REVERSED' | 'MERCHANT_DISABLED',
+): Promise<void> {
+  return cancelRemindersForTransactions(database, [transactionId], reason);
+}
+
+export interface StoredReminderSettings {
+  readonly preferences: ReminderPreferences;
+  readonly lockScreenDetail: 'FULL' | 'HIDE_CUSTOMER_AND_AMOUNT' | 'NONE';
+}
+
+export const DEFAULT_REMINDER_SETTINGS: StoredReminderSettings = Object.freeze({
+  preferences: DEFAULT_REMINDER_PREFERENCES,
+  lockScreenDetail: 'HIDE_CUSTOMER_AND_AMOUNT',
+});
+
+/**
+ * Reads the merchant's own reminder settings.
+ *
+ * Read on every write rather than cached, because the alternative is a merchant
+ * turning off "the day before" in settings and still being woken by it. Falls
+ * back to the defaults when the row is missing or unreadable — no reminders at
+ * all is a worse failure than the default schedule.
+ */
+export async function loadReminderSettings(
+  database: SqlDatabase,
+  organizationId: string,
+): Promise<StoredReminderSettings> {
+  try {
+    const row = await database.first<{
+      day_before_enabled: number;
+      on_due_date_enabled: number;
+      overdue_follow_up_enabled: number;
+      reminder_hour: number;
+      reminder_minute: number;
+      overdue_follow_up_days: string;
+      lock_screen_detail: string;
+    }>(
+      `SELECT day_before_enabled, on_due_date_enabled, overdue_follow_up_enabled,
+              reminder_hour, reminder_minute, overdue_follow_up_days, lock_screen_detail
+         FROM notification_preferences WHERE organization_id = ?`,
+      [organizationId],
+    );
+
+    if (!row) return DEFAULT_REMINDER_SETTINGS;
+
+    let overdueFollowUpDays = DEFAULT_REMINDER_PREFERENCES.overdueFollowUpDays;
+    try {
+      const parsed: unknown = JSON.parse(row.overdue_follow_up_days);
+      if (Array.isArray(parsed) && parsed.every((day) => Number.isInteger(day))) {
+        overdueFollowUpDays = parsed as number[];
+      }
+    } catch {
+      // Corrupt JSON in a settings column must not cost the merchant every
+      // reminder; the default offsets are a safe answer.
+    }
+
+    return {
+      preferences: {
+        dayBeforeEnabled: row.day_before_enabled === 1,
+        onDueDateEnabled: row.on_due_date_enabled === 1,
+        overdueFollowUpEnabled: row.overdue_follow_up_enabled === 1,
+        reminderHour: row.reminder_hour,
+        reminderMinute: row.reminder_minute,
+        overdueFollowUpDays,
+      },
+      lockScreenDetail:
+        row.lock_screen_detail === 'FULL' || row.lock_screen_detail === 'NONE'
+          ? row.lock_screen_detail
+          : 'HIDE_CUSTOMER_AND_AMOUNT',
+    };
+  } catch {
+    return DEFAULT_REMINDER_SETTINGS;
+  }
+}
+
+export interface ReminderApplierContext {
+  readonly database: SqlDatabase;
+  readonly organizationId: string;
+  readonly shopId: string;
+  readonly timeZone: string;
+  readonly locale: Locale;
+  /** Looks up a customer's display name. Returns null when unknown. */
+  readonly customerName: (customerId: string) => Promise<string | null>;
+}
+
+/**
+ * Turns a {@link ReminderPlan} into OS notifications and reminder rows.
+ *
+ * Cancellations run BEFORE new schedules. If a merchant records a debt that is
+ * immediately settled by existing credit the planner already excludes it, but
+ * ordering it this way means no sequence of events can leave a reminder alive for
+ * a debt the same plan says is settled.
+ */
+export function createReminderApplier(
+  context: ReminderApplierContext,
+): (plan: ReminderPlan) => Promise<void> {
+  return async (plan: ReminderPlan): Promise<void> => {
+    const bySettled = plan.cancel
+      .filter((entry) => entry.reason === 'SETTLED')
+      .map((entry) => entry.transactionId);
+    const byReversed = plan.cancel
+      .filter((entry) => entry.reason === 'REVERSED')
+      .map((entry) => entry.transactionId);
+
+    await cancelRemindersForTransactions(context.database, bySettled, 'SETTLED');
+    await cancelRemindersForTransactions(context.database, byReversed, 'REVERSED');
+
+    if (plan.schedule.length === 0) return;
+
+    // Loaded once per plan rather than once per debt: a single write never
+    // schedules for more than one debt today, but reading settings inside the
+    // loop would make that assumption expensive to break later.
+    const settings = await loadReminderSettings(context.database, context.organizationId);
+
+    for (const request of plan.schedule) {
+      const name = await context.customerName(request.customerId);
+
+      await scheduleRemindersForDebt({
+        database: context.database,
+        organizationId: context.organizationId,
+        shopId: context.shopId,
+        customerId: request.customerId,
+        customerName: name ?? '',
+        transactionId: request.transactionId,
+        dueAt: request.dueAt,
+        timeZone: context.timeZone,
+        preferences: settings.preferences,
+        lockScreenDetail: settings.lockScreenDetail,
+        amountLabel: formatMoney(money(request.amountMinor, request.currency), {
+          locale: context.locale,
+        }),
+      });
+    }
+  };
 }
 
 export interface ShareReminderInput {

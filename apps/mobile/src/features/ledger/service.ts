@@ -21,22 +21,31 @@ import {
   recomputeCustomerBalances,
   toDomainTransaction,
 } from '../../db/repositories';
+import { type ReminderPlan, planReminderChanges } from '../notifications/reminderPlan';
 
 /**
  * The ledger write path.
  *
- * Every merchant-visible write follows the same five steps, in this order:
+ * Every merchant-visible write follows the same six steps, in this order:
  *
  *   1. Validate, including the rules that need other rows (reversal eligibility).
  *   2. Write the transaction to SQLite.
  *   3. Recompute the customer's cached balances from the ledger.
  *   4. Enqueue an outbox operation with a stable idempotency key.
- *   5. Return immediately — the UI never waits on the network.
+ *   5. Bring reminders in line with the new balance.
+ *   6. Return immediately — the UI never waits on the network.
  *
  * Steps 2-4 run in ONE database transaction. A debt that was saved but never
  * queued would silently never reach the server; a queued operation with no local
  * row would upload something the merchant cannot see. Neither is acceptable, so
  * they land together or not at all.
+ *
+ * Step 5 runs AFTER that transaction commits, deliberately. Scheduling a
+ * notification is an OS call: it is slow, it can fail for reasons that have
+ * nothing to do with the ledger, and holding a SQLite write transaction open
+ * across it would block every other write. A reminder that could not be scheduled
+ * is a degraded reminder; a debt that was rolled back because of it would be lost
+ * money.
  */
 
 export interface LedgerContext {
@@ -61,6 +70,19 @@ export interface LedgerDependencies {
   readonly newId: () => string;
   /** Runs the callback inside a single SQLite transaction. */
   readonly runInTransaction: <T>(work: () => Promise<T>) => Promise<T>;
+  /**
+   * Applies the reminder consequences of a write.
+   *
+   * Optional: a context with no notification support simply does not pass one,
+   * and the ledger behaves identically. Placing it here rather than at the call
+   * sites is the point — reminder upkeep was previously written but never
+   * invoked, because "remember to also cancel the reminders" is exactly the kind
+   * of instruction that gets forgotten at the fourth screen that records a
+   * payment.
+   */
+  readonly applyReminders?: (plan: ReminderPlan) => Promise<void>;
+  /** Reports a non-fatal failure. Defaults to a dev-only console warning. */
+  readonly onNonFatalError?: (context: string, error: unknown) => void;
 }
 
 export interface RecordDebtCommand {
@@ -148,7 +170,7 @@ export class LedgerService {
       synced_at: null,
     };
 
-    return this.deps.runInTransaction(async () => {
+    const result = await this.deps.runInTransaction(async () => {
       await this.deps.transactions.insert(record);
 
       const balances = await recomputeCustomerBalances(
@@ -198,6 +220,48 @@ export class LedgerService {
 
       return { transaction: record, balances, queued: true };
     });
+
+    await this.updateReminders(record);
+
+    return result;
+  }
+
+  /**
+   * Brings the reminder set in line with what the ledger now says.
+   *
+   * Never throws. The write has already committed by the time this runs, so a
+   * failure here means the merchant's money is recorded correctly and one
+   * notification is wrong — turning that into a thrown error would show a save
+   * failure for a save that succeeded, and the merchant would record the debt
+   * twice.
+   */
+  private async updateReminders(record: TransactionRecord): Promise<void> {
+    const apply = this.deps.applyReminders;
+    if (!apply) return;
+
+    try {
+      const history = await this.deps.transactions.allForCustomer(record.customer_id);
+      const plan = planReminderChanges({
+        writtenTransactionId: record.id,
+        history: history.map(toDomainTransaction),
+      });
+
+      if (plan.schedule.length === 0 && plan.cancel.length === 0) return;
+
+      await apply(plan);
+    } catch (error) {
+      this.reportNonFatal('ledger.updateReminders', error);
+    }
+  }
+
+  private reportNonFatal(context: string, error: unknown): void {
+    if (this.deps.onNonFatalError) {
+      this.deps.onNonFatalError(context, error);
+      return;
+    }
+    if (__DEV__) {
+      console.warn(`[${context}]`, error);
+    }
   }
 
   private baseDraft(

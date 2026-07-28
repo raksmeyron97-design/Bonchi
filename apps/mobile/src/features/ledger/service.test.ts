@@ -10,6 +10,7 @@ import {
   type TransactionRecord,
   type TransactionRepository,
 } from '../../db/repositories';
+import { type ReminderPlan } from '../notifications/reminderPlan';
 import { LedgerService, LedgerServiceError, type LedgerContext } from './service';
 
 /**
@@ -191,14 +192,27 @@ interface Harness {
   balances: FakeBalances;
   outbox: FakeOutbox;
   customers: FakeCustomers;
+  /** Every reminder plan the write path handed to the applier, in order. */
+  reminderPlans: ReminderPlan[];
+  nonFatalErrors: { context: string; error: unknown }[];
 }
 
-function makeHarness(options: { canReverse?: boolean; now?: string } = {}): Harness {
+function makeHarness(
+  options: {
+    canReverse?: boolean;
+    now?: string;
+    /** Simulates the OS refusing to schedule. */
+    remindersThrow?: boolean;
+  } = {},
+): Harness {
   const transactions = new FakeTransactions();
   const balances = new FakeBalances();
   const outbox = new FakeOutbox();
   const customers = new FakeCustomers();
   customers.rows.set(CUSTOMER_ID, customer());
+
+  const reminderPlans: ReminderPlan[] = [];
+  const nonFatalErrors: { context: string; error: unknown }[] = [];
 
   let counter = 0;
   const service = new LedgerService(
@@ -216,10 +230,15 @@ function makeHarness(options: { canReverse?: boolean; now?: string } = {}): Harn
       // The real implementation opens a SQLite transaction; the fake runs inline,
       // which is enough to prove the calls happen together in one unit of work.
       runInTransaction: async (work) => work(),
+      applyReminders: async (plan) => {
+        reminderPlans.push(plan);
+        if (options.remindersThrow) throw new Error('OS scheduler unavailable');
+      },
+      onNonFatalError: (context, error) => nonFatalErrors.push({ context, error }),
     },
   );
 
-  return { service, transactions, balances, outbox, customers };
+  return { service, transactions, balances, outbox, customers, reminderPlans, nonFatalErrors };
 }
 
 function balanceOf(harness: Harness, currency: CurrencyCode): BalanceRecord | undefined {
@@ -635,5 +654,163 @@ describe('adjustments', () => {
         reason: '',
       }),
     ).rejects.toThrow(LedgerServiceError);
+  });
+});
+
+describe('reminders are kept in step with the ledger', () => {
+  /**
+   * These cover the gap this wiring closed: the scheduling and cancelling code
+   * was written and tested, but nothing on the write path ever called it. Every
+   * assertion here is about the CALL happening, which is precisely what unit
+   * tests of the reminder module itself could never show.
+   */
+
+  it('schedules reminders when a debt is recorded with a due date', async () => {
+    const harness = makeHarness();
+
+    const result = await harness.service.recordDebt({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+      dueAt: '2026-08-10' as PlainDate,
+    });
+
+    expect(harness.reminderPlans).toHaveLength(1);
+    expect(harness.reminderPlans[0]?.schedule).toEqual([
+      {
+        transactionId: result.transaction.id,
+        customerId: CUSTOMER_ID,
+        dueAt: '2026-08-10',
+        currency: 'KHR',
+        amountMinor: 50_000,
+      },
+    ]);
+  });
+
+  it('does not touch reminders for a debt with no due date', async () => {
+    const harness = makeHarness();
+
+    await harness.service.recordDebt({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+    });
+
+    // Nothing to schedule and nothing to cancel: the applier is not called at all
+    // rather than called with an empty plan, so no OS work happens.
+    expect(harness.reminderPlans).toEqual([]);
+  });
+
+  it('cancels reminders when a payment settles the debt', async () => {
+    const harness = makeHarness();
+
+    const debt = await harness.service.recordDebt({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+      dueAt: '2026-08-10' as PlainDate,
+    });
+
+    await harness.service.recordPayment({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+      paymentMethod: 'CASH',
+    });
+
+    expect(harness.reminderPlans).toHaveLength(2);
+    expect(harness.reminderPlans[1]?.cancel).toEqual([
+      { transactionId: debt.transaction.id, reason: 'SETTLED' },
+    ]);
+  });
+
+  it('leaves reminders in place when a payment only covers part of the debt', async () => {
+    const harness = makeHarness();
+
+    await harness.service.recordDebt({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+      dueAt: '2026-08-10' as PlainDate,
+    });
+
+    await harness.service.recordPayment({
+      customerId: CUSTOMER_ID,
+      amountMinor: 20_000,
+      currency: 'KHR',
+      paymentMethod: 'CASH',
+    });
+
+    // Still money owed, so the merchant should still be reminded.
+    expect(harness.reminderPlans).toHaveLength(1);
+  });
+
+  it('cancels reminders when a debt is reversed', async () => {
+    const harness = makeHarness();
+
+    const debt = await harness.service.recordDebt({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+      dueAt: '2026-08-10' as PlainDate,
+    });
+
+    await harness.service.reverse({
+      transactionId: debt.transaction.id,
+      reason: 'Recorded against the wrong customer',
+    });
+
+    expect(harness.reminderPlans[1]?.cancel).toEqual([
+      { transactionId: debt.transaction.id, reason: 'REVERSED' },
+    ]);
+  });
+
+  it('saves the debt even when scheduling the reminder fails', async () => {
+    // The write has already committed by the time reminders run. Throwing here
+    // would show a save failure for a save that succeeded, and the merchant would
+    // record the same debt twice.
+    const harness = makeHarness({ remindersThrow: true });
+
+    const result = await harness.service.recordDebt({
+      customerId: CUSTOMER_ID,
+      amountMinor: 50_000,
+      currency: 'KHR',
+      dueAt: '2026-08-10' as PlainDate,
+    });
+
+    expect(result.transaction.amount_minor).toBe(50_000);
+    expect(harness.transactions.rows).toHaveLength(1);
+    expect(harness.outbox.rows).toHaveLength(1);
+
+    // Swallowed, but not silently — a reminder that never got scheduled is a real
+    // defect and has to be reportable.
+    expect(harness.nonFatalErrors).toHaveLength(1);
+    expect(harness.nonFatalErrors[0]?.context).toBe('ledger.updateReminders');
+  });
+
+  it('works with no reminder support at all', async () => {
+    // A context that passes no applier — the ledger must behave identically.
+    const transactions = new FakeTransactions();
+    const customers = new FakeCustomers();
+    customers.rows.set(CUSTOMER_ID, customer());
+
+    const service = new LedgerService(CONTEXT, {
+      transactions,
+      balances: new FakeBalances(),
+      outbox: new FakeOutbox(),
+      customers,
+      now: () => new Date('2026-07-27T03:00:00.000Z'),
+      newId: () => '00000000-0000-4000-8000-000000000001',
+      runInTransaction: async (work) => work(),
+    });
+
+    await expect(
+      service.recordDebt({
+        customerId: CUSTOMER_ID,
+        amountMinor: 50_000,
+        currency: 'KHR',
+        dueAt: '2026-08-10' as PlainDate,
+      }),
+    ).resolves.toMatchObject({ queued: true });
   });
 });

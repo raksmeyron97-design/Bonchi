@@ -4,6 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  type CurrencyCode,
   allocateByCurrency,
   can,
   merchantToday,
@@ -33,6 +34,8 @@ import {
 } from '../../../src/db/repositories';
 import { useLedgerService } from '../../../src/features/ledger/useLedgerService';
 import { composeAndShareReminder } from '../../../src/features/notifications/reminders';
+import { shareCustomerStatement } from '../../../src/features/export/shareStatement';
+import { reportScreenError } from '../../../src/lib/reportError';
 
 /**
  * Customer detail: balances per currency, then the transaction timeline.
@@ -50,6 +53,7 @@ export default function CustomerDetail(): React.ReactElement {
   const buildService = useLedgerService();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [reversing, setReversing] = useState(false);
+  const [sharingStatement, setSharingStatement] = useState(false);
 
   const today = merchantToday(new Date(), session.timeZone);
 
@@ -58,12 +62,17 @@ export default function CustomerDetail(): React.ReactElement {
     enabled: Boolean(id),
     queryFn: async () => {
       const database = await getDatabase();
-      const [customer, balances, transactions] = await Promise.all([
+      const [customer, balances, transactions, shop] = await Promise.all([
         new SqlCustomerRepository(database).findById(String(id)),
         new SqlBalanceRepository(database).listForCustomer(String(id)),
         new SqlTransactionRepository(database).listForCustomer(String(id), { limit: 100 }),
+        // The shop's own name. The reminder message says "still owed at {shop}",
+        // and an empty name there reads as a message from nobody.
+        database.first<{ name: string }>(`SELECT name FROM shops WHERE id = ?`, [
+          session.shopId ?? '',
+        ]),
       ]);
-      return { customer, balances, transactions };
+      return { customer, balances, transactions, shop };
     },
   });
 
@@ -97,6 +106,76 @@ export default function CustomerDetail(): React.ReactElement {
   );
 
   const canReverse = can(session.role, 'transaction:reverse');
+  const shopName = query.data?.shop?.name ?? '';
+
+  // A statement covers one currency — riel and dollars never merge — so a
+  // customer with both gets asked which one they want.
+  const statementCurrencies = [...new Set(transactions.map((row) => row.currency))].sort();
+
+  const shareStatement = async (currency: CurrencyCode): Promise<void> => {
+    setSharingStatement(true);
+    try {
+      const database = await getDatabase();
+      const outcome = await shareCustomerStatement({
+        database,
+        customerId: String(id),
+        shopId: session.shopId ?? '',
+        currency,
+        locale,
+        timeZone: session.timeZone,
+        labels: {
+          title: t('statement.title'),
+          period: t('statement.period'),
+          closingBalance: t('statement.closingBalance'),
+          generatedAt: t('statement.generatedAt', {
+            date: formatInstant(new Date(), session.timeZone, locale),
+          }),
+          shopContact: t('statement.shopContact'),
+          columnDate: t('statement.column.date'),
+          columnDescription: t('statement.column.description'),
+          columnDebt: t('statement.column.debt'),
+          columnPayment: t('statement.column.payment'),
+          columnBalance: t('statement.column.balance'),
+          columnDueDate: t('statement.column.dueDate'),
+          reversed: t('status.reversed'),
+        },
+      });
+
+      // The file was written but the device offers no way to send it. Saying so
+      // is better than a success message for something the merchant cannot find.
+      if (outcome.status === 'SHARING_UNAVAILABLE') {
+        Alert.alert(t('export.done'), outcome.fileName);
+      }
+    } catch (error) {
+      reportScreenError('customers.shareStatement', error);
+      Alert.alert(t('error.generic.title'), t('error.generic.body'));
+    } finally {
+      setSharingStatement(false);
+    }
+  };
+
+  const onShareStatementPressed = (): void => {
+    const [first, ...rest] = statementCurrencies;
+    if (!first) return;
+
+    // Only one currency in this customer's history: no question to ask.
+    if (rest.length === 0) {
+      void shareStatement(first);
+      return;
+    }
+
+    Alert.alert(
+      t('statement.title'),
+      undefined,
+      [
+        ...statementCurrencies.map((currency) => ({
+          text: currency,
+          onPress: () => void shareStatement(currency),
+        })),
+        { text: t('common.cancel'), style: 'cancel' as const },
+      ],
+    );
+  };
 
   const confirmReverse = (transactionId: string): void => {
     // A reversal needs a reason, and Alert.prompt is iOS-only. Rather than
@@ -251,11 +330,20 @@ export default function CustomerDetail(): React.ReactElement {
                 composeAndShareReminder({
                   locale,
                   customerName: customer.name,
-                  shopName: '',
+                  shopName,
                   balances,
                 })
               }
             />
+
+            {statementCurrencies.length > 0 ? (
+              <Button
+                label={t('statement.title')}
+                variant="secondary"
+                loading={sharingStatement}
+                onPress={onShareStatementPressed}
+              />
+            ) : null}
 
             <Divider />
             <AppText variant="label" tone="secondary">

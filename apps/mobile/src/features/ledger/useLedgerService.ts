@@ -9,7 +9,9 @@ import {
   SqlTransactionRepository,
 } from '../../db/repositories';
 import { LedgerService, type LedgerContext } from './service';
-import { useSession } from '../../providers/AppProviders';
+import { useI18n, useSession } from '../../providers/AppProviders';
+import { createReminderApplier } from '../notifications/reminders';
+import { reportScreenError } from '../../lib/reportError';
 
 /**
  * Builds a LedgerService bound to the current session.
@@ -20,6 +22,7 @@ import { useSession } from '../../providers/AppProviders';
  */
 export function useLedgerService(currencyUsage: CurrencyUsage = 'BOTH'): () => Promise<LedgerService> {
   const session = useSession();
+  const { locale } = useI18n();
 
   return useMemo(() => {
     return async (): Promise<LedgerService> => {
@@ -36,20 +39,34 @@ export function useLedgerService(currencyUsage: CurrencyUsage = 'BOTH'): () => P
         canReverse: can(session.role, 'transaction:reverse'),
       };
 
+      const customers = new SqlCustomerRepository(database);
+
       return new LedgerService(context, {
         transactions: new SqlTransactionRepository(database),
         balances: new SqlBalanceRepository(database),
         outbox: new SqlOutboxRepository(database),
-        customers: new SqlCustomerRepository(database),
+        customers,
         now: () => new Date(),
         newId: uuidV4,
         // The transaction row, the balance recomputation and the outbox entry
         // must all commit together.
         runInTransaction: (work) => database.transaction(() => work()),
+        // Runs after that transaction commits: a new debt gets its reminders, and
+        // a debt the write settled or reversed loses them.
+        applyReminders: createReminderApplier({
+          database,
+          organizationId: context.organizationId,
+          shopId: context.shopId,
+          timeZone: context.timeZone,
+          locale,
+          customerName: async (customerId) => (await customers.findById(customerId))?.name ?? null,
+        }),
+        onNonFatalError: reportScreenError,
       });
     };
   }, [
     currencyUsage,
+    locale,
     session.deviceId,
     session.organizationId,
     session.role,
