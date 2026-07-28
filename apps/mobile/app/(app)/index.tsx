@@ -1,5 +1,5 @@
 import React from 'react';
-import { RefreshControl, ScrollView, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
@@ -134,31 +134,44 @@ export default function Home(): React.ReactElement {
                 )}
               </Card>
 
-              <Card style={{ flex: 1 }}>
-                <AppText variant="caption" tone="secondary">
-                  {t('home.dueToday')}
-                </AppText>
-                {summary?.dueTodayMinor.length ? (
-                  summary.dueTodayMinor.map((entry) => (
-                    <MoneyText
-                      key={entry.currency}
-                      value={money(entry.amountMinor, entry.currency)}
-                      variant="amount"
-                    />
-                  ))
-                ) : (
-                  <AppText variant="amount" tone="tertiary">
-                    —
+              {/* Tappable when there is something due: a figure the merchant can
+                  act on should lead to the list of people it refers to. */}
+              <Pressable
+                accessibilityRole={summary?.dueTodayMinor.length ? 'button' : 'text'}
+                accessibilityLabel={t('home.dueToday')}
+                disabled={!summary?.dueTodayMinor.length}
+                onPress={() => router.push('/lists/due?mode=DUE_TODAY')}
+                style={{ flex: 1 }}
+              >
+                <Card>
+                  <AppText variant="caption" tone="secondary">
+                    {t('home.dueToday')}
                   </AppText>
-                )}
-              </Card>
+                  {summary?.dueTodayMinor.length ? (
+                    summary.dueTodayMinor.map((entry) => (
+                      <MoneyText
+                        key={entry.currency}
+                        value={money(entry.amountMinor, entry.currency)}
+                        variant="amount"
+                      />
+                    ))
+                  ) : (
+                    <AppText variant="amount" tone="tertiary">
+                      —
+                    </AppText>
+                  )}
+                </Card>
+              </Pressable>
             </Row>
 
             {(summary?.overdueCustomerCount ?? 0) > 0 ? (
               <Button
                 label={tCount('home.overdueCustomers', summary?.overdueCustomerCount ?? 0)}
                 variant="secondary"
-                onPress={() => router.push('/(app)/transactions?filter=overdue')}
+                // Previously pushed the transaction list with `?filter=overdue`,
+                // which that screen ignored — the merchant landed on an unfiltered
+                // list of everything that had ever happened.
+                onPress={() => router.push('/lists/due?mode=OVERDUE')}
               />
             ) : null}
 

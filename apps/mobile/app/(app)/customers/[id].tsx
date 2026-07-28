@@ -222,6 +222,19 @@ export default function CustomerDetail(): React.ReactElement {
               <AppText variant="h2" style={{ flex: 1 }}>
                 {customer.name}
               </AppText>
+              {can(session.role, 'customer:update') ? (
+                <Button
+                  label={t('common.edit')}
+                  variant="ghost"
+                  fullWidth={false}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/(app)/customers/edit',
+                      params: { id: String(id) },
+                    })
+                  }
+                />
+              ) : null}
               <Button
                 label={t('common.back')}
                 variant="ghost"
@@ -229,6 +242,12 @@ export default function CustomerDetail(): React.ReactElement {
                 onPress={() => router.back()}
               />
             </Row>
+
+            {customer.archived_at ? (
+              <AppText variant="caption" tone="secondary">
+                {t('customers.archived')}
+              </AppText>
+            ) : null}
 
             {customer.phone ? (
               <AppText variant="body" tone="secondary">
@@ -307,18 +326,31 @@ export default function CustomerDetail(): React.ReactElement {
                 ))
             )}
 
+            {/* The customer id travels with the navigation. Without it the form
+                opened with nobody selected, and the merchant had to search for
+                the person whose page they were just on. */}
             <Row gap={theme.spacing.sm}>
               <View style={{ flex: 1 }}>
                 <Button
                   label={t('transactions.recordDebt')}
-                  onPress={() => router.push('/record/debt')}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/record/debt',
+                      params: { customerId: String(id) },
+                    })
+                  }
                 />
               </View>
               <View style={{ flex: 1 }}>
                 <Button
                   label={t('transactions.recordPayment')}
                   variant="secondary"
-                  onPress={() => router.push('/record/payment')}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/record/payment',
+                      params: { customerId: String(id) },
+                    })
+                  }
                 />
               </View>
             </Row>

@@ -1,6 +1,9 @@
 import {
+  type ChargeSettlement,
   type CurrencyCode,
+  type LedgerTransaction,
   type PlainDate,
+  allocateByCurrency,
   merchantToday,
   resolveDebtStatus,
 } from '@bonchi/domain';
@@ -191,6 +194,7 @@ export interface DueListEntry {
   readonly customerId: string;
   readonly customerName: string;
   readonly currency: CurrencyCode;
+  /** What is STILL owed on this debt, after payments. Never the original amount. */
   readonly remainingMinor: number;
   readonly dueAt: PlainDate;
   readonly daysOverdue: number;
@@ -199,8 +203,13 @@ export interface DueListEntry {
 /**
  * Debts that are overdue or due today.
  *
- * Settlement is derived per debt in the domain layer rather than in SQL, so the
- * list agrees exactly with what the customer detail screen shows.
+ * SQL narrows the candidates; the allocation engine decides what is actually
+ * still owed. That split matters because SQL cannot answer it: a payment does not
+ * name the debt it settles, so "is this debt paid" is the output of FIFO
+ * allocation across the customer's whole ledger, per currency.
+ *
+ * Doing it any other way produces a list that tells the merchant to chase money
+ * they already have — which is the one thing a debt ledger must never do.
  */
 export async function loadDueList(
   database: SqlDatabase,
@@ -208,15 +217,14 @@ export async function loadDueList(
   today: PlainDate,
   mode: 'OVERDUE' | 'DUE_TODAY',
 ): Promise<DueListEntry[]> {
-  const rows = await database.all<{
+  const candidates = await database.all<{
     id: string;
     customer_id: string;
     name: string;
     currency: CurrencyCode;
-    amount_minor: number;
     due_at: string;
   }>(
-    `SELECT t.id, t.customer_id, c.name, t.currency, t.amount_minor, t.due_at
+    `SELECT t.id, t.customer_id, c.name, t.currency, t.due_at
      FROM transactions t
      JOIN customers c ON c.id = t.customer_id
      WHERE t.shop_id = ?
@@ -224,29 +232,94 @@ export async function loadDueList(
        AND t.due_at IS NOT NULL
        AND ${mode === 'OVERDUE' ? 't.due_at < ?' : 't.due_at = ?'}
        AND c.archived_at IS NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM transactions r WHERE r.reversal_of_transaction_id = t.id
-       )
      ORDER BY t.due_at ASC`,
     [shopId, today],
   );
 
+  if (candidates.length === 0) return [];
+
+  const customerIds = [...new Set(candidates.map((row) => row.customer_id))];
+
+  // One query for every affected customer's full ledger, rather than one query
+  // per customer. Allocation needs the WHOLE ledger — including payments with no
+  // due date and debts that are not themselves overdue — because an earlier debt
+  // absorbs a payment before a later one does.
+  const placeholders = customerIds.map(() => '?').join(',');
+  const ledgerRows = await database.all<{
+    id: string;
+    customer_id: string;
+    transaction_type: LedgerTransaction['transactionType'];
+    currency: CurrencyCode;
+    amount_minor: number;
+    occurred_at: string;
+    adjustment_direction: 'INCREASE' | 'DECREASE' | null;
+    due_at: string | null;
+    reversal_of_transaction_id: string | null;
+  }>(
+    `SELECT id, customer_id, transaction_type, currency, amount_minor, occurred_at,
+            adjustment_direction, due_at, reversal_of_transaction_id
+       FROM transactions
+      WHERE customer_id IN (${placeholders})`,
+    customerIds,
+  );
+
+  const ledgerByCustomer = new Map<string, LedgerTransaction[]>();
+  for (const row of ledgerRows) {
+    const entry: LedgerTransaction = {
+      id: row.id,
+      customerId: row.customer_id,
+      transactionType: row.transaction_type,
+      currency: row.currency,
+      amountMinor: row.amount_minor,
+      occurredAt: row.occurred_at,
+      adjustmentDirection: row.adjustment_direction,
+      dueAt: (row.due_at as PlainDate | null) ?? null,
+      reversalOfTransactionId: row.reversal_of_transaction_id,
+    };
+    const existing = ledgerByCustomer.get(row.customer_id);
+    if (existing) existing.push(entry);
+    else ledgerByCustomer.set(row.customer_id, [entry]);
+  }
+
+  // chargeId -> settlement, across every customer and currency.
+  const settlementByCharge = new Map<string, ChargeSettlement>();
+  for (const history of ledgerByCustomer.values()) {
+    for (const result of allocateByCurrency(history).values()) {
+      for (const charge of result.charges) {
+        settlementByCharge.set(charge.chargeId, charge);
+      }
+    }
+  }
+
   const entries: DueListEntry[] = [];
-  for (const row of rows) {
+
+  for (const row of candidates) {
+    const charge = settlementByCharge.get(row.id);
+
+    // Absent from the allocation result means reversed — a reversed debt and its
+    // reversal are both dropped from the economic picture. Nothing to chase.
+    if (!charge) continue;
+
+    // Fully paid. The due date has passed, but the money arrived.
+    if (charge.settlement === 'PAID' || charge.settlement === 'REVERSED') continue;
+
     const status = resolveDebtStatus({
-      settlement: 'UNPAID',
+      settlement: charge.settlement,
       dueAt: row.due_at as PlainDate,
       today,
     });
+
     entries.push({
       transactionId: row.id,
       customerId: row.customer_id,
       customerName: row.name,
       currency: row.currency,
-      remainingMinor: row.amount_minor,
+      // What is left, not what was originally lent.
+      remainingMinor: charge.remainingMinor,
       dueAt: row.due_at as PlainDate,
       daysOverdue: status.daysOverdue,
     });
   }
+
   return entries;
 }
