@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Placeholder values so the apps can typecheck and build without real secrets.
+  # No real credential is ever needed for CI: nothing here talks to a live project.
+  NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-anon-key-not-a-real-credential
+  SUPABASE_SERVICE_ROLE_KEY: ci-placeholder-service-key-not-a-real-credential
+  EXPO_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+  EXPO_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-anon-key-not-a-real-credential
+  EXPO_PUBLIC_APP_ENV: local
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  database:
+    name: Migrations and RLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Applies every migration to a real PostgreSQL and runs the SQL suite, so
+      # tenant isolation and ledger immutability are proven by execution rather
+      # than by review. See scripts/db-test.sh.
+      - name: Apply migrations and run database tests
+        run: ./scripts/db-test.sh
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for committed secrets
+        run: ./scripts/check-secrets.sh

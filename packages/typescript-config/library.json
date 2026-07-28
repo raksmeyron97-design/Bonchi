@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Bonchi Library",
+  "extends": "./base.json",
+  "compilerOptions": {
+    // CommonJS output is deliberate: these packages are consumed by Metro (React Native),
+    // Next.js server components, Vitest and jest-expo. CJS is the one format all four
+    // resolve without transform configuration in node_modules.
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test.tsx"]
+}

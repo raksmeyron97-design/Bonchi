@@ -1,0 +1,35 @@
+{
+  "name": "@bonchi/admin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "clean": "rm -rf .next .turbo dist",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@bonchi/database": "workspace:*",
+    "@bonchi/domain": "workspace:*",
+    "@bonchi/localization": "workspace:*",
+    "@bonchi/validation": "workspace:*",
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.110.8",
+    "next": "^16.2.12",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@bonchi/eslint-config": "workspace:*",
+    "@bonchi/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@types/react": "~19.2.2",
+    "@types/react-dom": "~19.2.2",
+    "eslint": "^9.39.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.10"
+  }
+}

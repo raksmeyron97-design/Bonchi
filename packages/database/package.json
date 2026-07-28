@@ -1,0 +1,27 @@
+{
+  "name": "@bonchi/database",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@bonchi/domain": "workspace:*",
+    "@supabase/supabase-js": "^2.110.8"
+  },
+  "devDependencies": {
+    "@bonchi/eslint-config": "workspace:*",
+    "@bonchi/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.39.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.10"
+  }
+}

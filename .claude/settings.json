@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(rm -rf /tmp/chrome-b4 /tmp/rendered3.html)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-b4 --virtual-time-budget=25000 --dump-dom http://localhost:8082/)",
+      "Bash(curl -s -o /tmp/w1 -w \"GET /worker -> %{http_code}, %{content_type}, %{size_download} bytes\\\\n\" http://localhost:8082/worker)",
+      "Bash(curl -s -o /tmp/w2 -w \"GET /worker -> %{http_code}, %{content_type}, %{size_download} bytes\\\\n\" http://localhost:8081/worker)",
+      "Bash(curl -s -o /tmp/w3 -w \"GET /worker -> %{http_code}, %{content_type}, %{size_download} bytes\\\\n\" http://localhost:8082/worker)",
+      "Bash(rm -rf /tmp/chrome-b5 /tmp/rendered4.html /tmp/render4.txt)",
+      "Bash('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --headless=new --disable-gpu --no-first-run --user-data-dir=/tmp/chrome-b5 --virtual-time-budget=30000 --dump-dom http://localhost:8082/)",
+      "Bash(brew --prefix)",
+      "Bash(echo \"brew prefix: $\\(brew --prefix\\)\")",
+      "Bash(sysctl -n machdep.cpu.brand_string)",
+      "Bash(brew list *)",
+      "Bash(brew install *)",
+      "Bash([ -x \"$HOME/Library/Android/sdk/emulator/emulator\" ])",
+      "Bash([ -d \"$HOME/Library/Android/sdk/system-images/android-34\" ])",
+      "Read(//Users/macbookpro/Library/Android/sdk/**)",
+      "Read(//Users/macbookpro/Library/Android/sdk/system-images/android-34/**)",
+      "Read(//usr/local/share/android-commandlinetools/**)",
+      "Read(//usr/local/**)",
+      "Read(//usr/local/share/android-commandlinetools/cmdline-tools/latest/bin/**)",
+      "Bash([ -d \"$HOME/Library/Android/sdk/system-images/android-34/google_apis/x86_64\" ])",
+      "Bash(chmod +x scripts/android-env.sh)",
+      "Bash([ -f \"$HOME/Library/Android/sdk/system-images/android-34/google_apis/x86_64/package.xml\" ])",
+      "Bash(chmod +x scripts/dev-android.sh)",
+      "Bash(git config *)",
+      "Bash(echo \"name:  $\\(git config user.name || git config --global user.name || echo UNSET\\)\")",
+      "Bash(echo \"email: $\\(git config user.email || git config --global user.email || echo UNSET\\)\")",
+      "Bash(git add *)"
+    ]
+  }
+}

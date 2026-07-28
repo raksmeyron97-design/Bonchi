@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <body style="font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #1c1917; padding: 24px;">
+    <h2 style="margin: 0 0 8px; font-size: 20px;">Bonchi</h2>
+    <p style="margin: 0 0 20px; color: #57534e;">Your sign-in code:</p>
+
+    <!--
+      The 6-digit token, not a link.
+
+      The app asks the merchant to type a code, so the code has to be IN the email.
+      Supabase's default templates only contain {{ .ConfirmationURL }}, which opens
+      the app's `bonchi://` deep link — that works on a phone but shows a blank page
+      in a desktop browser, and never yields a code to type.
+    -->
+    <p style="font-size: 34px; font-weight: 700; letter-spacing: 10px; margin: 0 0 24px;">
+      {{ .Token }}
+    </p>
+
+    <p style="color: #57534e; font-size: 14px; margin: 0 0 8px;">
+      This code expires in 10 minutes. If you did not request it, you can ignore this email.
+    </p>
+
+    <p style="color: #a8a29e; font-size: 12px; margin: 24px 0 0;">
+      On a device you can also open the app directly:
+      <a href="{{ .ConfirmationURL }}">{{ .ConfirmationURL }}</a>
+    </p>
+  </body>
+</html>

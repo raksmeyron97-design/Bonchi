@@ -1,0 +1,95 @@
+# Supabase local development configuration.
+# Docs: https://supabase.com/docs/guides/cli/config
+
+project_id = "bonchi"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage"]
+extra_search_path = ["public", "extensions"]
+# Keeps a runaway client from pulling an entire organization's ledger in one request.
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+# Supabase CLI 2.x provisions PostgreSQL 17 locally. Note that scripts/db-test.sh
+# applies the same migrations to postgres:16-alpine, so the schema is exercised on
+# both majors — nothing in it depends on a 17-only feature.
+major_version = 17
+
+[db.pooler]
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = true
+port = 54323
+
+[local_smtp]
+# Local mail catcher — lets OTP/magic-link onboarding be tested without a real
+# provider. Sign-in codes land at http://localhost:54324 instead of a real inbox.
+enabled = true
+port = 54324
+
+[storage]
+enabled = true
+# Matches MAX_ATTACHMENT_BYTES in @bonchi/validation.
+file_size_limit = "8MiB"
+
+[auth]
+enabled = true
+site_url = "bonchi://auth-callback"
+additional_redirect_urls = ["bonchi://auth-callback", "http://localhost:3000/auth/callback"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+
+# LOCAL DEVELOPMENT SETTING. Production auth is configured in the Supabase
+# dashboard, not from this file.
+#
+# With confirmations on, a brand-new address gets the "Confirm signup" flow, whose
+# token must be verified with type 'signup'. Off, every address — new or existing —
+# goes through the same magic-link/OTP path the app actually implements
+# (`verifyOtp({ type: 'email' })`), so local sign-in behaves consistently.
+enable_confirmations = false
+
+# OTP is the primary flow: merchants sign in on a new device with a code.
+otp_length = 6
+otp_expiry = 600
+
+# The default templates contain only a confirmation LINK. The app asks the
+# merchant to type a 6-digit code, so these templates surface {{ .Token }}.
+# Without them there is no code anywhere in the email to type.
+[auth.email.template.magic_link]
+subject = "Your Bonchi sign-in code"
+content_path = "./supabase/templates/otp-code.html"
+
+[auth.email.template.confirmation]
+subject = "Your Bonchi sign-in code"
+content_path = "./supabase/templates/otp-code.html"
+
+[auth.sms]
+# Phone OTP stays off until a properly configured Cambodian provider is in place.
+# Enabling it without one produces an auth flow that silently fails for merchants.
+enable_signup = false
+enable_confirmations = false
+
+[auth.mfa]
+max_enrolled_factors = 10
+
+[analytics]
+enabled = false
+
+[edge_runtime]
+enabled = true
+policy = "oneshot"
