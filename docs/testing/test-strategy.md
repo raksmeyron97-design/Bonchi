@@ -65,6 +65,23 @@ The suites also distinguish the **two denial mechanisms**: `anon` is refused at 
 privilege level (a raised error), while a cross-tenant read is refused by filtering
 (zero rows) and a cross-tenant UPDATE by affecting nothing.
 
+## Integration check against a live stack
+
+```bash
+pnpm db:start
+node scripts/sync-integration-check.mjs
+```
+
+Covers the one seam neither the unit tests nor the SQL suite reach: a genuine
+signed-in session, over HTTP, through PostgREST, with row-level security in force
+— the path a real phone takes. It signs in with an email code read from the local
+mail catcher, uploads a transaction, replays the identical operation, and asserts
+exactly one row exists.
+
+Kept out of `pnpm test` because it needs live infrastructure. Run it after any
+change to `record_transaction`, the sync transport, or the RLS policies on
+`transactions`.
+
 ## Acceptance scenarios
 
 | # | Scenario | Covered by |
@@ -72,7 +89,7 @@ privilege level (a raised error), while a cross-tenant read is refused by filter
 | A | Create a debt offline; syncs exactly once | `ledger/service.test.ts`, `sync/engine.test.ts` |
 | B | Partial payment leaves the original debt intact | `allocation.test.ts`, `service.test.ts`, `10_ledger.test.sql` |
 | C | KHR and USD stay separate | all three layers, plus a schema scan for a combined-total column |
-| D | Duplicate upload creates no duplicate debt | `engine.test.ts`, `50_sync.test.sql` |
+| D | Duplicate upload creates no duplicate debt | `engine.test.ts`, `50_sync.test.sql`, and `scripts/sync-integration-check.mjs` against a live stack |
 | E | Tenant isolation, including payload tampering | `20_rls_tenancy.test.sql` |
 | F | New-device restore, balances match | `50_sync.test.sql`; the app-level flow is `restore/service.ts` |
 | G | Reversal keeps history and corrects the balance | `reversal.test.ts`, `service.test.ts`, `10_ledger.test.sql` |

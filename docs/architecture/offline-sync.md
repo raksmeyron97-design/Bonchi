@@ -125,6 +125,29 @@ identically, so continuing would burn the entire queue's retry budget on it.
    trusting a cached figure. This is both the rebuild and the verification that
    device and server agree.
 
+## What starts the engine
+
+`apps/mobile/src/features/sync/SyncProvider.tsx` owns the engine instance and
+decides when to drain. Four triggers, each for a distinct reason:
+
+| Trigger | Why |
+|---|---|
+| session becomes ready | the first drain after launch, once a signed-in user can authorize requests |
+| app returns to the foreground | when a stale badge is most visible to the merchant |
+| connectivity restored | the moment work can actually succeed |
+| slow periodic tick (60s) | **not redundant** — the engine schedules retries minutes ahead, and something must be awake to act on them |
+
+Draining is gated on `session.isReady && userId`: uploading before identity is
+hydrated would send requests as nobody. Every path routes its error into the local
+log rather than surfacing it — a background upload failing is normal on a weak
+connection and must never interrupt someone mid-sale.
+
+After an operation is confirmed, `localState.ts` marks the underlying row
+`SYNCED`. That runs for a REPLAYED operation too: "the server already had this"
+and "the server has this" are the same fact to a merchant, and leaving a row
+marked pending because one response was lost would be a lie the app never
+corrects.
+
 ## Where this is tested
 
 - [`packages/domain/src/sync/state.test.ts`](../../packages/domain/src/sync/state.test.ts) — the state machine, classification, backoff

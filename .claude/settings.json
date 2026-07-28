@@ -28,7 +28,17 @@
       "Bash(git config *)",
       "Bash(echo \"name:  $\\(git config user.name || git config --global user.name || echo UNSET\\)\")",
       "Bash(echo \"email: $\\(git config user.email || git config --global user.email || echo UNSET\\)\")",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(grep -iE '\\\\.env|secret|\\\\.pem$|\\\\.key$|credential')",
+      "Bash(echo \"identity \\(this repo only\\): $\\(git config user.name\\) <$\\(git config user.email\\)>\")",
+      "Bash(git commit *)",
+      "Bash(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -T git@github.com)",
+      "Bash(git remote *)",
+      "Bash(gh auth *)",
+      "Bash(echo \"remote: $\\(git remote get-url origin\\)\")",
+      "Bash(git push *)",
+      "Bash(chmod +x scripts/sync-integration-check.mjs)",
+      "Bash(node scripts/sync-integration-check.mjs)"
     ]
   }
 }

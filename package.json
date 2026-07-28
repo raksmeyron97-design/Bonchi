@@ -24,6 +24,7 @@
     "lint": "turbo run lint",
     "mobile": "pnpm --filter @bonchi/mobile start",
     "mobile:android": "./scripts/dev-android.sh",
+    "sync:check": "node scripts/sync-integration-check.mjs",
     "test": "turbo run test",
     "test:watch": "turbo run test:watch",
     "typecheck": "turbo run typecheck",

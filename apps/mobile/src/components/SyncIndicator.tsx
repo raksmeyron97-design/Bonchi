@@ -1,13 +1,10 @@
 import React from 'react';
 import { Pressable, View } from 'react-native';
 import { router } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { AppText } from './primitives';
 import { useI18n, useTheme } from '../providers/AppProviders';
-import { getDatabase } from '../db/client';
-import { SqlOutboxRepository } from '../db/repositories';
-import { getConnectivity } from '../features/sync/connectivity';
-import { type MerchantSyncStatus, toMerchantStatus } from '../features/sync/engine';
+import { type MerchantSyncStatus } from '../features/sync/engine';
+import { useSync } from '../features/sync/SyncProvider';
 
 /**
  * Sync status, in the merchant's language.
@@ -21,32 +18,10 @@ export function SyncIndicator(): React.ReactElement | null {
   const theme = useTheme();
   const { t, tCount } = useI18n();
 
-  const query = useQuery({
-    queryKey: ['sync-status'],
-    refetchInterval: 5_000,
-    queryFn: async () => {
-      const database = await getDatabase();
-      const outbox = new SqlOutboxRepository(database);
-      const [counts, isOnline] = await Promise.all([
-        outbox.counts(),
-        getConnectivity().isOnline(),
-      ]);
-      const snapshot = {
-        isOnline,
-        isSyncing: false,
-        pending: counts.pending,
-        failed: counts.failed,
-        conflict: counts.conflict,
-      };
-      // Both the status AND the counts are returned. Deriving only the status and
-      // rendering a hardcoded count told the merchant "0 waiting to upload" while
-      // work was in fact queued — the one number this chip exists to convey.
-      return { status: toMerchantStatus(snapshot), ...snapshot };
-    },
-  });
-
-  const status: MerchantSyncStatus = query.data?.status ?? 'SYNCED';
-  const pending = query.data?.pending ?? 0;
+  // Reads the running engine rather than polling the outbox separately. Two
+  // independent pollers would disagree with each other, and only the engine knows
+  // when a drain is actually in flight.
+  const { status, pending, syncNow } = useSync();
 
   // Everything saved and online: say nothing. A permanent "all good" badge is
   // noise that trains merchants to ignore the indicator when it matters.
@@ -89,7 +64,12 @@ export function SyncIndicator(): React.ReactElement | null {
       accessibilityRole="button"
       accessibilityLabel={visual.label}
       accessibilityHint={t('settings.diagnostics')}
-      onPress={() => router.push('/settings/diagnostics')}
+      onPress={() => {
+        // Tapping "something needs your attention" should attempt the obvious
+        // fix; anything else opens the detail view.
+        if (status === 'NEEDS_ATTENTION') router.push('/settings/diagnostics');
+        else void syncNow();
+      }}
       style={{ minHeight: 32, justifyContent: 'center' }}
     >
       <View

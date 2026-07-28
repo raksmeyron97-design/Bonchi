@@ -20,6 +20,11 @@ import { DEFAULT_TIMEZONE, resolveTimeZone } from '@bonchi/domain';
 import { type Theme, darkTheme, lightTheme } from '../theme/tokens';
 import { getDatabase } from '../db/client';
 import { loadPersistedSession } from '../lib/session';
+import { SyncProvider } from '../features/sync/SyncProvider';
+import { SessionContext, type SessionContextValue, useSession } from './SessionContext';
+
+// Re-exported so existing screens can keep importing these from AppProviders.
+export { useSession, type SessionContextValue };
 
 /**
  * Application-wide providers.
@@ -58,31 +63,6 @@ export function useI18n(): LocalizationValue {
   const value = useContext(LocalizationContext);
   if (!value) {
     throw new Error('useI18n must be used inside <AppProviders>.');
-  }
-  return value;
-}
-
-// ---------------------------------------------------------------------------
-// Session
-// ---------------------------------------------------------------------------
-
-export interface SessionContextValue {
-  readonly userId: string | null;
-  readonly organizationId: string | null;
-  readonly shopId: string | null;
-  readonly deviceId: string | null;
-  readonly timeZone: string;
-  readonly role: 'OWNER' | 'MANAGER' | 'CASHIER' | 'VIEWER';
-  readonly isReady: boolean;
-  readonly setSession: (session: Partial<SessionContextValue>) => void;
-}
-
-const SessionContext = createContext<SessionContextValue | null>(null);
-
-export function useSession(): SessionContextValue {
-  const value = useContext(SessionContext);
-  if (!value) {
-    throw new Error('useSession must be used inside <AppProviders>.');
   }
   return value;
 }
@@ -237,7 +217,11 @@ export function AppProviders({
     <QueryClientProvider client={queryClient}>
       <ThemeContext.Provider value={theme}>
         <LocalizationContext.Provider value={localizationValue}>
-          <SessionContext.Provider value={sessionValue}>{children}</SessionContext.Provider>
+          <SessionContext.Provider value={sessionValue}>
+            {/* Inside the session context: the sync engine only runs once there
+                is a signed-in, hydrated session to authorize its uploads. */}
+            <SyncProvider>{children}</SyncProvider>
+          </SessionContext.Provider>
         </LocalizationContext.Provider>
       </ThemeContext.Provider>
     </QueryClientProvider>
