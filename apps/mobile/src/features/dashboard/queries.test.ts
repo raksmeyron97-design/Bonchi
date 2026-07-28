@@ -1,7 +1,7 @@
 import { type CurrencyCode, type PlainDate } from '@bonchi/domain';
 import { type SqlDatabase } from '../../db/client';
 import { createTestDatabase } from '../../db/testDatabase';
-import { loadDueList } from './queries';
+import { loadDashboard, loadDueList } from './queries';
 
 /**
  * The overdue list against real SQL.
@@ -290,5 +290,89 @@ describe('loadDueList — allocation across the whole ledger', () => {
     const list = await loadDueList(database, SHOP_ID, TODAY, 'OVERDUE');
 
     expect(list.map((entry) => entry.dueAt)).toEqual(['2026-07-10', '2026-07-25']);
+  });
+});
+
+describe('loadDashboard — the due-today figure agrees with the due-today list', () => {
+  /**
+   * The home card is tappable and opens the due-today list. Before this, the card
+   * ran its own SQL that summed every debt dated today regardless of payment, so
+   * the headline number could contradict the screen behind it.
+   */
+
+  const TZ = 'Asia/Phnom_Penh';
+  // 10:00 in Phnom Penh on 2026-07-28.
+  const NOW = new Date('2026-07-28T03:00:00.000Z');
+
+  it('excludes a debt that was paid this morning', async () => {
+    const customer = await addCustomer('សុខ ដារា');
+    await addTransaction(customer, 50_000, { dueAt: '2026-07-28' });
+    await addTransaction(customer, 50_000, {
+      type: 'PAYMENT',
+      occurredAt: '2026-07-28T02:00:00.000Z',
+    });
+
+    const summary = await loadDashboard(database, SHOP_ID, TZ, NOW);
+
+    expect(summary.dueTodayMinor).toEqual([]);
+  });
+
+  it('shows what is left after a part payment', async () => {
+    const customer = await addCustomer('សុខ ដារា');
+    await addTransaction(customer, 50_000, { dueAt: '2026-07-28' });
+    await addTransaction(customer, 20_000, {
+      type: 'PAYMENT',
+      occurredAt: '2026-07-28T02:00:00.000Z',
+    });
+
+    const summary = await loadDashboard(database, SHOP_ID, TZ, NOW);
+
+    expect(summary.dueTodayMinor).toEqual([{ currency: 'KHR', amountMinor: 30_000 }]);
+  });
+
+  it('excludes an archived customer', async () => {
+    // The old query never joined `customers`, so archived people counted.
+    const customer = await addCustomer('សុខ ដារា', { archived: true });
+    await addTransaction(customer, 50_000, { dueAt: '2026-07-28' });
+
+    const summary = await loadDashboard(database, SHOP_ID, TZ, NOW);
+
+    expect(summary.dueTodayMinor).toEqual([]);
+  });
+
+  it('reports riel and dollars separately', async () => {
+    const customer = await addCustomer('សុខ ដារា');
+    await addTransaction(customer, 50_000, { currency: 'KHR', dueAt: '2026-07-28' });
+    await addTransaction(customer, 1_000, { currency: 'USD', dueAt: '2026-07-28' });
+
+    const summary = await loadDashboard(database, SHOP_ID, TZ, NOW);
+
+    expect(summary.dueTodayMinor).toEqual([
+      { currency: 'KHR', amountMinor: 50_000 },
+      { currency: 'USD', amountMinor: 1_000 },
+    ]);
+  });
+
+  it('matches the list total exactly, across a mixed ledger', async () => {
+    // The property that must hold: the card is the sum of the list.
+    const a = await addCustomer('សុខ ដារា');
+    const b = await addCustomer('ចាន់ សុភា');
+
+    await addTransaction(a, 50_000, { dueAt: '2026-07-28' });
+    await addTransaction(a, 20_000, {
+      type: 'PAYMENT',
+      occurredAt: '2026-07-28T02:00:00.000Z',
+    });
+    await addTransaction(b, 40_000, { dueAt: '2026-07-28' });
+    await addTransaction(b, 15_000, { dueAt: '2026-07-20' }); // overdue, not today
+    await addTransaction(b, 9_000, { dueAt: null }); // no due date
+
+    const summary = await loadDashboard(database, SHOP_ID, TZ, NOW);
+    const list = await loadDueList(database, SHOP_ID, '2026-07-28' as PlainDate, 'DUE_TODAY');
+
+    const listTotal = list.reduce((sum, entry) => sum + entry.remainingMinor, 0);
+    const cardTotal = summary.dueTodayMinor.reduce((sum, entry) => sum + entry.amountMinor, 0);
+
+    expect(cardTotal).toBe(listTotal);
   });
 });

@@ -74,7 +74,6 @@ export async function loadDashboard(
 
   // "Received today" is bounded by the MERCHANT's day, not UTC. A payment taken
   // at 8am local must count for today even though it is still yesterday in UTC.
-  const dayStart = `${today}T00:00:00`;
   const receivedToday = await database.all<{ currency: CurrencyCode; amount_minor: number }>(
     `SELECT t.currency AS currency, SUM(t.amount_minor) AS amount_minor
      FROM transactions t
@@ -88,18 +87,25 @@ export async function loadDashboard(
     [shopId, sqliteTimeZoneModifier(timeZone), today],
   );
 
-  const dueToday = await database.all<{ currency: CurrencyCode; amount_minor: number }>(
-    `SELECT t.currency AS currency, SUM(t.amount_minor) AS amount_minor
-     FROM transactions t
-     WHERE t.shop_id = ?
-       AND t.transaction_type IN ('DEBT','OPENING_BALANCE')
-       AND t.due_at = ?
-       AND NOT EXISTS (
-         SELECT 1 FROM transactions r WHERE r.reversal_of_transaction_id = t.id
-       )
-     GROUP BY t.currency`,
-    [shopId, today],
-  );
+  // Deliberately the SAME query that backs the due-today LIST, summed.
+  //
+  // It used to be its own SQL statement that summed `t.amount_minor` for every
+  // debt dated today. That ignored payments, so a customer who owed 50,000៛ due
+  // today and paid it at 9am left the card reading 50,000៛ until midnight — and it
+  // never joined `customers`, so an archived customer's debt counted too.
+  //
+  // The card is tappable and opens that list. Two queries answering one question
+  // is how a headline figure comes to contradict the screen behind it, so there is
+  // now only one.
+  const dueTodayEntries = await loadDueList(database, shopId, today, 'DUE_TODAY');
+
+  const dueTodayByCurrency = new Map<CurrencyCode, number>();
+  for (const entry of dueTodayEntries) {
+    dueTodayByCurrency.set(
+      entry.currency,
+      (dueTodayByCurrency.get(entry.currency) ?? 0) + entry.remainingMinor,
+    );
+  }
 
   const overdueCustomers = await database.first<{ count: number }>(
     `SELECT COUNT(DISTINCT b.customer_id) AS count
@@ -114,8 +120,6 @@ export async function loadDashboard(
     [shopId],
   );
 
-  void dayStart;
-
   return {
     today,
     totals: totals.map((row) => ({
@@ -129,10 +133,9 @@ export async function loadDashboard(
       currency: row.currency,
       amountMinor: row.amount_minor ?? 0,
     })),
-    dueTodayMinor: dueToday.map((row) => ({
-      currency: row.currency,
-      amountMinor: row.amount_minor ?? 0,
-    })),
+    dueTodayMinor: [...dueTodayByCurrency.entries()]
+      .map(([currency, amountMinor]) => ({ currency, amountMinor }))
+      .sort((a, b) => a.currency.localeCompare(b.currency)),
     overdueCustomerCount: overdueCustomers?.count ?? 0,
     activeCustomerCount: activeCustomers?.count ?? 0,
   };
