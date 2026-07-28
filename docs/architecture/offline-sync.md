@@ -109,6 +109,33 @@ identically, so continuing would burn the entire queue's retry budget on it.
   overwritten.
 - **Archived records** keep their financial history. Sync never deletes.
 
+## What happens after sign-in
+
+`app/(auth)/restore.tsx` runs a decision before anything else, because routing on
+local state alone is what made a new phone create a SECOND organization while the
+merchant's real ledger sat on the server.
+
+The decision is pure and fully tested
+(`src/features/restore/decideAfterSignIn.ts`):
+
+| Situation | Action |
+|---|---|
+| Server reports no shop | ONBOARD — genuinely a new merchant |
+| Server shop matches the local one | CONTINUE — nothing to download |
+| Server shop, device has none | RESTORE |
+| Server shop, device holds a DIFFERENT shop with unsynced work | CONFIRM_REPLACE — ask, never destroy silently |
+| Server unreachable | CANNOT_DECIDE — retry, never guess |
+
+Two of those rows exist because restore calls `clearLocalData`, which wipes the
+outbox. Restoring on top of unsynced work would destroy debts that never reached
+the server, so it is gated behind an explicit choice; and guessing while offline is
+precisely the bug being fixed.
+
+The membership lookup filters by `user_id`, not just by RLS. An OWNER may read the
+whole roster, so an unfiltered query returns a row per colleague — and adopting one
+would restore the owner as, say, a VIEWER and silently remove their ability to
+reverse a transaction.
+
 ## Restore onto a new device
 
 `restoreOrganization()` implements Acceptance Scenario F:

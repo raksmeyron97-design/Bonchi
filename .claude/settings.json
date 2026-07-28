@@ -38,7 +38,9 @@
       "Bash(echo \"remote: $\\(git remote get-url origin\\)\")",
       "Bash(git push *)",
       "Bash(chmod +x scripts/sync-integration-check.mjs)",
-      "Bash(node scripts/sync-integration-check.mjs)"
+      "Bash(node scripts/sync-integration-check.mjs)",
+      "Bash(cp /tmp/membership-check.mjs ./membership-check.mjs)",
+      "Bash(node ./membership-check.mjs)"
     ]
   }
 }

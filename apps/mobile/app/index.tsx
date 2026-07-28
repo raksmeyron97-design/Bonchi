@@ -6,7 +6,7 @@ import { getAppState, getDatabase, resetDatabaseConnection } from '../src/db/cli
 import { ErrorState, LoadingState } from '../src/components/primitives';
 import { useI18n } from '../src/providers/AppProviders';
 
-type Destination = 'loading' | 'failed' | 'auth' | 'onboarding' | 'app';
+type Destination = 'loading' | 'failed' | 'auth' | 'restore' | 'onboarding' | 'app';
 
 /**
  * How long to wait for the local database before giving up.
@@ -71,7 +71,10 @@ export default function Index(): React.ReactElement {
 
       if (cancelled) return;
       if (!userId) setDestination('auth');
-      else if (!organizationId || !onboardingCompletedAt) setDestination('onboarding');
+      // Signed in but no shop on this device. It may exist on the server — from a
+      // previous phone, or a sign-in that was interrupted — so ask before
+      // assuming this is a new merchant and sending them to onboarding.
+      else if (!organizationId || !onboardingCompletedAt) setDestination('restore');
       else setDestination('app');
     })().catch((error: unknown) => {
       if (cancelled) return;
@@ -122,6 +125,7 @@ export default function Index(): React.ReactElement {
   }
 
   if (destination === 'auth') return <Redirect href="/(auth)/welcome" />;
+  if (destination === 'restore') return <Redirect href="/(auth)/restore" />;
   if (destination === 'onboarding') return <Redirect href="/(onboarding)" />;
   return <Redirect href="/(app)" />;
 }

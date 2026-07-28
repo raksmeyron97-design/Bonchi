@@ -36,7 +36,10 @@ export default function VerifyOtp(): React.ReactElement {
       // Both copies, together: SQLite for the next launch, context for this one.
       session.setSession({ userId: data.user.id });
 
-      router.replace('/(onboarding)');
+      // Not straight to onboarding: the merchant may already have a shop on the
+      // server, and assuming otherwise creates a duplicate. The restore screen
+      // asks first.
+      router.replace('/(auth)/restore');
     } catch (error) {
       reportScreenError('auth.verifyOtp', error);
       setError(t('error.generic.body'));
